@@ -5,7 +5,12 @@ defect coordinates along the strip length to identify damaged work rolls and spe
 """
 
 import numpy as np
-from scipy import signal
+try:
+    from scipy import signal
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
+    signal = None
 
 # Standard Work Roll Geometries across Jindal Stainless Tandem & Sendzimir Mills
 MILL_ROLL_REGISTRY = [

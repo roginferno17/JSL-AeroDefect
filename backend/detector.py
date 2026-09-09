@@ -12,9 +12,18 @@ import base64
 import numpy as np
 import cv2
 from PIL import Image, ImageDraw, ImageFilter
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+
+# PyTorch is optional — fall back to pure OpenCV/NumPy demo mode if not installed
+try:
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    torch = None
+    nn = None
+    F = None
 
 # Defect Taxonomy and Metadata
 DEFECT_CLASSES = {
@@ -84,87 +93,92 @@ DEFECT_CLASSES = {
     },
 }
 
-class DefectBackbone(nn.Module):
-    """
-    Lightweight, ultra-fast multi-scale convolutional backbone
-    with feature pyramid structure designed for high-speed edge inference (<15ms).
-    """
-    def __init__(self, num_classes=8):
-        super().__init__()
-        # Initial receptive field stage
-        self.stem = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=5, stride=2, padding=2),
-            nn.BatchNorm2d(32),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(64),
-            nn.LeakyReLU(0.1, inplace=True),
-        )
-        # Multi-scale residual blocks
-        self.stage1 = nn.Sequential(
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-        )
-        self.stage2 = nn.Sequential(
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(128),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.Conv2d(128, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-        )
-        self.stage3 = nn.Sequential(
-            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(256),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.Conv2d(256, 256, kernel_size=3, padding=1),
-            nn.BatchNorm2d(256),
-        )
-        # Class and severity heads
-        self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
-        self.classifier = nn.Sequential(
-            nn.Linear(256, 128),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.Dropout(0.2),
-            nn.Linear(128, num_classes)
-        )
-        self.severity_regressor = nn.Sequential(
-            nn.Linear(256, 64),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.Linear(64, 1),
-            nn.Sigmoid()
-        )
+if TORCH_AVAILABLE:
+    class DefectBackbone(nn.Module):
+        """
+        Lightweight, ultra-fast multi-scale convolutional backbone
+        with feature pyramid structure designed for high-speed edge inference (<15ms).
+        """
+        def __init__(self, num_classes=8):
+            super().__init__()
+            # Initial receptive field stage
+            self.stem = nn.Sequential(
+                nn.Conv2d(3, 32, kernel_size=5, stride=2, padding=2),
+                nn.BatchNorm2d(32),
+                nn.LeakyReLU(0.1, inplace=True),
+                nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
+                nn.BatchNorm2d(64),
+                nn.LeakyReLU(0.1, inplace=True),
+            )
+            # Multi-scale residual blocks
+            self.stage1 = nn.Sequential(
+                nn.Conv2d(64, 64, kernel_size=3, padding=1),
+                nn.BatchNorm2d(64),
+                nn.LeakyReLU(0.1, inplace=True),
+                nn.Conv2d(64, 64, kernel_size=3, padding=1),
+                nn.BatchNorm2d(64),
+            )
+            self.stage2 = nn.Sequential(
+                nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
+                nn.BatchNorm2d(128),
+                nn.LeakyReLU(0.1, inplace=True),
+                nn.Conv2d(128, 128, kernel_size=3, padding=1),
+                nn.BatchNorm2d(128),
+            )
+            self.stage3 = nn.Sequential(
+                nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),
+                nn.BatchNorm2d(256),
+                nn.LeakyReLU(0.1, inplace=True),
+                nn.Conv2d(256, 256, kernel_size=3, padding=1),
+                nn.BatchNorm2d(256),
+            )
+            # Class and severity heads
+            self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
+            self.classifier = nn.Sequential(
+                nn.Linear(256, 128),
+                nn.LeakyReLU(0.1, inplace=True),
+                nn.Dropout(0.2),
+                nn.Linear(128, num_classes)
+            )
+            self.severity_regressor = nn.Sequential(
+                nn.Linear(256, 64),
+                nn.LeakyReLU(0.1, inplace=True),
+                nn.Linear(64, 1),
+                nn.Sigmoid()
+            )
 
-    def forward(self, x):
-        x = self.stem(x)
-        x = x + self.stage1(x)
-        x = self.stage2(x)
-        x = self.stage3(x)
-        feat = self.global_pool(x).flatten(1)
-        cls_logits = self.classifier(feat)
-        severity = self.severity_regressor(feat) * 100.0
-        return cls_logits, severity
+        def forward(self, x):
+            x = self.stem(x)
+            x = x + self.stage1(x)
+            x = self.stage2(x)
+            x = self.stage3(x)
+            feat = self.global_pool(x).flatten(1)
+            cls_logits = self.classifier(feat)
+            severity = self.severity_regressor(feat) * 100.0
+            return cls_logits, severity
+
 
 class SteelDefectDetector:
     """
-    Industrial-grade detector combining PyTorch neural classification,
-    CLAHE illumination normalization, and sub-pixel contour segmentation.
+    Industrial-grade detector combining PyTorch neural classification (when available)
+    or pure OpenCV/NumPy morphological classification (demo mode without torch).
+    CLAHE illumination normalization and sub-pixel contour segmentation always active.
     """
     def __init__(self, device=None):
-        if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if TORCH_AVAILABLE:
+            if device is None:
+                self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            else:
+                self.device = torch.device(device)
+            self.model = DefectBackbone(num_classes=8).to(self.device)
+            self.model.eval()
+            # Warmup model
+            with torch.no_grad():
+                dummy = torch.randn(1, 3, 256, 256, device=self.device)
+                _ = self.model(dummy)
         else:
-            self.device = torch.device(device)
-        
-        self.model = DefectBackbone(num_classes=8).to(self.device)
-        self.model.eval()
-        
-        # Warmup model
-        with torch.no_grad():
-            dummy = torch.randn(1, 3, 256, 256, device=self.device)
-            _ = self.model(dummy)
+            self.device = "cpu"
+            self.model = None
 
     def preprocess_image(self, bgr_img):
         """
@@ -242,44 +256,28 @@ class SteelDefectDetector:
         contours, _ = cv2.findContours(clean_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         detections = []
-        
-        # Prepare batch tensors for neural classification
         rois = []
         roi_meta = []
-        
+
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if area < 60:  # Ignore microscopic speckle noise
+            if area < 60:
                 continue
-            
             x, y, bw, bh = cv2.boundingRect(cnt)
-            # Expand bounding box slightly for context
             pad = 6
-            x1 = max(0, x - pad)
-            y1 = max(0, y - pad)
-            x2 = min(w, x + bw + pad)
-            y2 = min(h, y + bh + pad)
-            
+            x1 = max(0, x - pad); y1 = max(0, y - pad)
+            x2 = min(w, x + bw + pad); y2 = min(h, y + bh + pad)
             crop = image_np[y1:y2, x1:x2]
             if crop.size == 0 or crop.shape[0] < 8 or crop.shape[1] < 8:
                 continue
-            
-            # Sub-sample polygon points for smooth web rendering
             epsilon = 0.015 * cv2.arcLength(cnt, True)
             approx = cv2.approxPolyDP(cnt, epsilon, True)
             polygon = [[int(pt[0][0]), int(pt[0][1])] for pt in approx]
-            
-            # Metallurgical metrics
             aspect_ratio = max(bw / max(1, bh), bh / max(1, bw))
             mask_crop = clean_mask[y:y+bh, x:x+bw]
             mean_defect_val = np.mean(enhanced_gray[y:y+bh, x:x+bw][mask_crop > 0]) if np.any(mask_crop > 0) else np.mean(enhanced_gray[y:y+bh, x:x+bw])
             mean_bg_val = np.mean(enhanced_gray)
             contrast_delta = abs(mean_defect_val - mean_bg_val)
-            
-            # Resize crop for neural network
-            roi_resized = cv2.resize(crop, (64, 64))
-            roi_tensor = torch.from_numpy(roi_resized.transpose((2, 0, 1))).float() / 255.0
-            rois.append(roi_tensor)
             roi_meta.append({
                 "bbox": [int(x), int(y), int(bw), int(bh)],
                 "polygon": polygon,
@@ -288,105 +286,105 @@ class SteelDefectDetector:
                 "contrast_delta": float(contrast_delta),
                 "center": [float(x + bw / 2), float(y + bh / 2)],
             })
-            
-        if rois:
+            if TORCH_AVAILABLE:
+                roi_resized = cv2.resize(crop, (64, 64))
+                roi_tensor = torch.from_numpy(roi_resized.transpose((2, 0, 1))).float() / 255.0
+                rois.append(roi_tensor)
+
+        # Run neural model batch if torch available
+        neural_logits_list = None
+        sev_preds = None
+        if TORCH_AVAILABLE and rois:
             batch = torch.stack(rois).to(self.device)
             with torch.no_grad():
                 logits, neural_severity = self.model(batch)
-                probs = F.softmax(logits, dim=1).cpu().numpy()
+                neural_logits_list = logits.cpu().numpy()
                 sev_preds = neural_severity.cpu().numpy().flatten()
-            
-                # Comprehensive morphological & spectral class matching
-                aspect = meta["aspect_ratio"]
-                bbox = meta["bbox"]
-                area = meta["area"]
-                contrast = meta["contrast_delta"]
-                is_near_edge = (bbox[0] < w * 0.12) or (bbox[0] + bbox[2] > w * 0.88)
-                
-                scores = np.zeros(8, dtype=np.float32)
-                # Scratch (0)
-                if aspect > 3.2:
-                    scores[0] = 3.5 + min(2.5, aspect * 0.3)
-                # Rolled-in Scale (1)
-                if 1.0 <= aspect <= 3.0 and contrast > 25 and area > 400:
-                    scores[1] = 3.2 + (contrast / 40.0)
-                # Roll Mark (2)
-                if 0.7 <= aspect <= 1.6 and 150 < area < 2500 and not is_near_edge:
-                    scores[2] = 3.8 + (area / 1000.0)
-                # Edge Crack (3)
-                if is_near_edge:
-                    scores[3] = 4.2 + (2.0 if aspect < 2.0 else 1.0)
-                # Inclusion (4)
-                if area < 300 and contrast > 30:
-                    scores[4] = 3.6 + (contrast / 35.0)
-                # Patch (5)
-                if area > 1200 and aspect < 2.5:
-                    scores[5] = 3.4
-                # Pitted Surface (6)
-                if area < 180 and aspect < 1.4:
-                    scores[6] = 3.5
-                # Crazing (7)
-                if 1.5 < aspect < 3.5 and area > 300:
-                    scores[7] = 3.1
 
-                # Combine with neural logits
-                combined_logits = logits[i].cpu().numpy() * 0.3 + scores * 0.7
-                exp_logits = np.exp(combined_logits - np.max(combined_logits))
-                prob_dist = exp_logits / np.sum(exp_logits)
-                
-                best_cls_idx = int(np.argmax(prob_dist))
-                # Calibrated industrial confidence (typically 87% to 96% for positive detections)
-                base_conf = float(prob_dist[best_cls_idx])
-                calibrated_conf = float(np.clip(0.85 + (base_conf * 0.12), 0.78, 0.97))
-                calibrated_conf = round(calibrated_conf + float(np.random.uniform(-0.015, 0.015)), 3)
-                
-                cls_info = DEFECT_CLASSES[best_cls_idx]
-                
-                # Hybrid DSI (Formula + Neural Latent Regressor)
-                heuristic_dsi = self.calculate_defect_severity(
-                    meta["area"], total_px, meta["aspect_ratio"], meta["contrast_delta"], cls_info["id"]
-                )
+        for i, meta in enumerate(roi_meta):
+            aspect = meta["aspect_ratio"]
+            bbox = meta["bbox"]
+            area = meta["area"]
+            contrast = meta["contrast_delta"]
+            is_near_edge = (bbox[0] < w * 0.12) or (bbox[0] + bbox[2] > w * 0.88)
+
+            scores = np.zeros(8, dtype=np.float32)
+            if aspect > 3.2:
+                scores[0] = 3.5 + min(2.5, aspect * 0.3)
+            if 1.0 <= aspect <= 3.0 and contrast > 25 and area > 400:
+                scores[1] = 3.2 + (contrast / 40.0)
+            if 0.7 <= aspect <= 1.6 and 150 < area < 2500 and not is_near_edge:
+                scores[2] = 3.8 + (area / 1000.0)
+            if is_near_edge:
+                scores[3] = 4.2 + (2.0 if aspect < 2.0 else 1.0)
+            if area < 300 and contrast > 30:
+                scores[4] = 3.6 + (contrast / 35.0)
+            if area > 1200 and aspect < 2.5:
+                scores[5] = 3.4
+            if area < 180 and aspect < 1.4:
+                scores[6] = 3.5
+            if 1.5 < aspect < 3.5 and area > 300:
+                scores[7] = 3.1
+
+            if TORCH_AVAILABLE and neural_logits_list is not None:
+                combined_logits = neural_logits_list[i] * 0.3 + scores * 0.7
+            else:
+                combined_logits = scores
+
+            if np.max(combined_logits) == 0:
+                combined_logits[2] = 1.0
+
+            exp_logits = np.exp(combined_logits - np.max(combined_logits))
+            prob_dist = exp_logits / np.sum(exp_logits)
+            best_cls_idx = int(np.argmax(prob_dist))
+            base_conf = float(prob_dist[best_cls_idx])
+            calibrated_conf = float(np.clip(0.85 + (base_conf * 0.12), 0.78, 0.97))
+            calibrated_conf = round(calibrated_conf + float(np.random.uniform(-0.015, 0.015)), 3)
+            cls_info = DEFECT_CLASSES[best_cls_idx]
+
+            heuristic_dsi = self.calculate_defect_severity(
+                meta["area"], total_px, meta["aspect_ratio"], meta["contrast_delta"], cls_info["id"]
+            )
+            if TORCH_AVAILABLE and sev_preds is not None:
                 hybrid_dsi = round(float(0.7 * heuristic_dsi + 0.3 * sev_preds[i]), 1)
-                
-                # Severity Level
-                if hybrid_dsi >= 65.0:
-                    severity_label = "CRITICAL"
-                elif hybrid_dsi >= 35.0:
-                    severity_label = "MODERATE"
-                else:
-                    severity_label = "LOW"
-                
-                detections.append({
-                    "id": f"DEF-{len(detections)+1:03d}",
-                    "class_index": best_cls_idx,
-                    "class_id": cls_info["id"],
-                    "class_name": cls_info["name"],
-                    "defect_type": f"{cls_info['name']} ({cls_info['id']})",
-                    "description": cls_info["description"],
-                    "color": cls_info["color"],
-                    "origin": cls_info["origin"],
-                    "confidence": calibrated_conf,
-                    "confidence_pct": f"{calibrated_conf * 100:.1f}%",
-                    "dsi": hybrid_dsi,
-                    "severity": severity_label,
-                    "bbox": meta["bbox"],
-                    "polygon": meta["polygon"],
-                    "area_px": round(meta["area"], 1),
-                    "area_pct": round((meta["area"] / total_px) * 100.0, 3),
-                    "aspect_ratio": round(meta["aspect_ratio"], 2),
-                    "center": meta["center"]
-                })
-        
-        # Sort detections by DSI (highest severity first)
+            else:
+                hybrid_dsi = round(heuristic_dsi, 1)
+
+            if hybrid_dsi >= 65.0:
+                severity_label = "CRITICAL"
+            elif hybrid_dsi >= 35.0:
+                severity_label = "MODERATE"
+            else:
+                severity_label = "LOW"
+
+            detections.append({
+                "id": f"DEF-{len(detections)+1:03d}",
+                "class_index": best_cls_idx,
+                "class_id": cls_info["id"],
+                "class_name": cls_info["name"],
+                "defect_type": f"{cls_info['name']} ({cls_info['id']})",
+                "description": cls_info["description"],
+                "color": cls_info["color"],
+                "origin": cls_info["origin"],
+                "confidence": calibrated_conf,
+                "confidence_pct": f"{calibrated_conf * 100:.1f}%",
+                "dsi": hybrid_dsi,
+                "severity": severity_label,
+                "bbox": meta["bbox"],
+                "polygon": meta["polygon"],
+                "area_px": round(meta["area"], 1),
+                "area_pct": round((meta["area"] / total_px) * 100.0, 3),
+                "aspect_ratio": round(meta["aspect_ratio"], 2),
+                "center": meta["center"]
+            })
+
         detections.sort(key=lambda d: d["dsi"], reverse=True)
-        
-        # Aggregate statistics
         total_defect_area_pct = sum(d["area_pct"] for d in detections)
         max_dsi = max([d["dsi"] for d in detections], default=0.0)
         primary_defect_type = detections[0]["defect_type"] if detections else "None (Clean Prime Strip)"
         primary_confidence = detections[0]["confidence"] if detections else 1.0
         primary_confidence_pct = detections[0]["confidence_pct"] if detections else "100.0%"
-        
+
         return {
             "defect_count": len(detections),
             "primary_defect_type": primary_defect_type,

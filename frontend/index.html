@@ -91,6 +91,13 @@
             <span class="btn-desc">Mill QA dispatch report</span>
           </div>
         </button>
+        <button class="nav-btn" data-tab="tab-history" id="btn-tab-history">
+          <svg viewBox="0 0 24 24" class="nav-icon"><path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>
+          <div class="btn-text">
+            <span class="btn-title">Audit Log & History</span>
+            <span class="btn-desc">Export Excel / CSV records</span>
+          </div>
+        </button>
       </nav>
 
       <!-- Grade Info Card -->
@@ -129,6 +136,14 @@
           </div>
 
           <div class="toolbar-actions">
+            <button id="btn-toggle-webcam" class="btn-webcam" title="Use Laptop Webcam">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm0-12.5c-2.49 0-4.5 2.01-4.5 4.5s2.01 4.5 4.5 4.5 4.5-2.01 4.5-4.5-2.01-4.5-4.5-4.5zm0 7c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+              <span id="webcam-btn-label">Open Laptop Webcam</span>
+            </button>
+            <button id="btn-capture-webcam" class="btn-webcam-snap hidden" title="Capture and inspect current frame">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M9 2L7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9zm3 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"/></svg>
+              Capture Frame
+            </button>
             <label class="btn-upload" title="Upload Steel Strip Image">
               <input type="file" id="file-upload-input" accept="image/*" style="display:none;">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
@@ -157,6 +172,8 @@
             
             <div class="canvas-viewport">
               <img id="annotated-preview-img" src="/sample_defects/sample_sc.jpg" alt="Steel Strip Image" />
+              <video id="webcam-video" autoplay playsinline muted class="hidden" style="position:absolute; top:0; left:0; width:100%; height:100%; object-fit:contain; z-index:2; background:#000;"></video>
+              <canvas id="webcam-canvas" class="hidden"></canvas>
               <div id="canvas-overlay" class="overlay-container"></div>
               <div id="cam-scanline" class="scanline-bar hidden"></div>
             </div>
@@ -506,6 +523,75 @@
                 <span>Jindal Stainless Quality Control</span>
               </div>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= TAB 5: HISTORICAL AUDIT LOG ================= -->
+      <section id="tab-history" class="tab-pane">
+        <div class="card history-card">
+          <div class="card-header">
+            <div class="header-left">
+              <span class="card-title">METALLURGICAL INSPECTION AUDIT TRAIL</span>
+              <span class="chart-subtitle">Persistent session log with disposition verdicts & telemetry</span>
+            </div>
+            <div class="header-right history-actions">
+              <button id="btn-export-csv" class="btn-history-export">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+                Export CSV / Excel
+              </button>
+              <button id="btn-clear-history" class="btn-history-clear">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                Clear Log
+              </button>
+            </div>
+          </div>
+
+          <!-- Summary KPI Strip -->
+          <div class="history-kpis">
+            <div class="kpi-mini">
+              <span class="kpi-mini-lbl">TOTAL INSPECTIONS</span>
+              <strong id="kpi-total-inspections" class="text-cyan">0</strong>
+            </div>
+            <div class="kpi-mini">
+              <span class="kpi-mini-lbl">PRIME PASS RATE</span>
+              <strong id="kpi-prime-rate" class="text-emerald">0%</strong>
+            </div>
+            <div class="kpi-mini">
+              <span class="kpi-mini-lbl">AVG DEFECT DSI</span>
+              <strong id="kpi-avg-dsi" class="text-orange">0.0</strong>
+            </div>
+            <div class="kpi-mini">
+              <span class="kpi-mini-lbl">SCRAP INCIDENTS</span>
+              <strong id="kpi-scrap-count" class="text-rose">0</strong>
+            </div>
+          </div>
+
+          <!-- History Table -->
+          <div class="history-table-container">
+            <table class="history-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>TIMESTAMP</th>
+                  <th>SOURCE / COIL ID</th>
+                  <th>GRADE</th>
+                  <th>PRIMARY DEFECT</th>
+                  <th>COUNT</th>
+                  <th>MAX DSI</th>
+                  <th>LATENCY</th>
+                  <th>DISPOSITION VERDICT</th>
+                  <th>ACTION</th>
+                </tr>
+              </thead>
+              <tbody id="history-table-body">
+                <tr class="empty-history-row">
+                  <td colspan="10" style="text-align: center; padding: 36px 0; color: var(--text-dim);">
+                    📋 No inspections performed yet. Run Live Inspection, upload an image, or use the webcam to generate entries.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>
       </section>

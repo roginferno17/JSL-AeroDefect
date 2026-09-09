@@ -81,10 +81,11 @@ def health_check():
         "status": "ONLINE",
         "engine": "JSL-AeroDefect Pro",
         "device": str(detector.device),
-        "cuda_available": detector.device.type == "cuda",
+        "cuda_available": hasattr(detector.device, 'type') and detector.device.type == "cuda",
         "timestamp": time.time(),
         "supported_grades": list(GRADE_MATRIX.keys()),
-        "defect_classes": [v["name"] for v in DEFECT_CLASSES.values()]
+        "defect_classes": [v["name"] for v in DEFECT_CLASSES.values()],
+        "torch_available": bool(getattr(detector, 'model', None) is not None)
     }
 
 @app.get("/api/grades")

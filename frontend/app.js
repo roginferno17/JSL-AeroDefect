@@ -15,6 +15,10 @@ const state = {
   latestInspection: null,
   fftChartInstance: null,
   coilSimData: null,
+  isWebcamActive: false,
+  webcamStream: null,
+  webcamInterval: null,
+  auditHistory: JSON.parse(localStorage.getItem('jsl_inspection_history') || '[]'),
 };
 
 // DOM Elements
@@ -39,6 +43,11 @@ const el = {
   // Tab 1: Live Inspection
   presetButtons: document.querySelectorAll('.preset-btn'),
   fileUploadInput: document.getElementById('file-upload-input'),
+  btnToggleWebcam: document.getElementById('btn-toggle-webcam'),
+  webcamBtnLabel: document.getElementById('webcam-btn-label'),
+  btnCaptureWebcam: document.getElementById('btn-capture-webcam'),
+  webcamVideo: document.getElementById('webcam-video'),
+  webcamCanvas: document.getElementById('webcam-canvas'),
   btnToggleCamSim: document.getElementById('btn-toggle-cam-sim'),
   simBtnLabel: document.getElementById('sim-btn-label'),
   camScanline: document.getElementById('cam-scanline'),
@@ -88,6 +97,15 @@ const el = {
   certValDsi: document.getElementById('cert-val-dsi'),
   certFinalVerdict: document.getElementById('cert-final-verdict'),
   certFinalNotes: document.getElementById('cert-final-notes'),
+
+  // Tab 5: History Audit Log
+  btnExportCsv: document.getElementById('btn-export-csv'),
+  btnClearHistory: document.getElementById('btn-clear-history'),
+  kpiTotalInspections: document.getElementById('kpi-total-inspections'),
+  kpiPrimeRate: document.getElementById('kpi-prime-rate'),
+  kpiAvgDsi: document.getElementById('kpi-avg-dsi'),
+  kpiScrapCount: document.getElementById('kpi-scrap-count'),
+  historyTableBody: document.getElementById('history-table-body'),
 };
 
 // Grade metadata dictionary for dynamic UI feedback
@@ -134,6 +152,8 @@ function switchTab(tabId) {
     loadCoilSimulation();
   } else if (tabId === 'tab-certificate') {
     updateCertificateView();
+  } else if (tabId === 'tab-history') {
+    renderHistoryView();
   }
 }
 
@@ -167,9 +187,10 @@ el.lineSpeedSlider.addEventListener('input', (e) => {
   el.telemFps.textContent = `${simulatedFps} FPS`;
 });
 
-// ================= Preset & File Upload Inspection =================
+// ================= Preset & File Upload & Webcam Inspection =================
 el.presetButtons.forEach(btn => {
   btn.addEventListener('click', () => {
+    stopWebcam();
     el.presetButtons.forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     const sample = btn.dataset.sample;
@@ -180,10 +201,106 @@ el.presetButtons.forEach(btn => {
 
 el.fileUploadInput.addEventListener('change', (e) => {
   if (e.target.files && e.target.files[0]) {
+    stopWebcam();
     const file = e.target.files[0];
     uploadAndInspect(file);
   }
 });
+
+// Webcam Controls
+if (el.btnToggleWebcam) {
+  el.btnToggleWebcam.addEventListener('click', toggleWebcam);
+}
+if (el.btnCaptureWebcam) {
+  el.btnCaptureWebcam.addEventListener('click', captureAndInspectWebcamFrame);
+}
+
+async function toggleWebcam() {
+  if (state.isWebcamActive) {
+    stopWebcam();
+  } else {
+    await startWebcam();
+  }
+}
+
+async function startWebcam() {
+  // Stop simulation if running
+  if (state.isCamSimRunning) {
+    el.btnToggleCamSim.click();
+  }
+  
+  try {
+    el.feedStatusTag.textContent = 'CONNECTING LAPTOP WEBCAM...';
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false
+    });
+    state.webcamStream = stream;
+    el.webcamVideo.srcObject = stream;
+    await el.webcamVideo.play();
+    
+    state.isWebcamActive = true;
+    el.webcamVideo.classList.remove('hidden');
+    el.btnToggleWebcam.classList.add('active');
+    el.webcamBtnLabel.textContent = 'Turn Off Webcam';
+    el.btnCaptureWebcam.classList.remove('hidden');
+    el.feedStatusTag.textContent = 'LIVE WEBCAM STREAM (Click "Capture Frame" to inspect)';
+    el.camScanline.classList.remove('hidden');
+
+    // Auto-inspect first frame after short delay
+    setTimeout(() => {
+      captureAndInspectWebcamFrame();
+    }, 1000);
+  } catch (err) {
+    console.error('Webcam access error:', err);
+    el.feedStatusTag.textContent = `WEBCAM ERROR: ${err.message || 'Permission denied'}`;
+    alert(`Could not access camera: ${err.message}. Please check browser camera permissions.`);
+  }
+}
+
+function stopWebcam() {
+  if (state.webcamStream) {
+    state.webcamStream.getTracks().forEach(track => track.stop());
+    state.webcamStream = null;
+  }
+  state.isWebcamActive = false;
+  if (el.webcamVideo) {
+    el.webcamVideo.srcObject = null;
+    el.webcamVideo.classList.add('hidden');
+  }
+  if (el.btnToggleWebcam) {
+    el.btnToggleWebcam.classList.remove('active');
+    el.webcamBtnLabel.textContent = 'Open Laptop Webcam';
+  }
+  if (el.btnCaptureWebcam) {
+    el.btnCaptureWebcam.classList.add('hidden');
+  }
+  if (el.camScanline) {
+    el.camScanline.classList.add('hidden');
+  }
+}
+
+async function captureAndInspectWebcamFrame() {
+  if (!state.isWebcamActive || !el.webcamVideo.videoWidth) {
+    return;
+  }
+  
+  el.feedStatusTag.textContent = 'ANALYZING LIVE WEBCAM FRAME...';
+  const canvas = el.webcamCanvas;
+  canvas.width = el.webcamVideo.videoWidth;
+  canvas.height = el.webcamVideo.videoHeight;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(el.webcamVideo, 0, 0, canvas.width, canvas.height);
+
+  canvas.toBlob(async (blob) => {
+    if (!blob) return;
+    const file = new File([blob], 'webcam_frame.jpg', { type: 'image/jpeg' });
+    await uploadAndInspect(file);
+    // After inspection, keep video hidden temporarily or re-show with analysis
+    el.webcamVideo.classList.add('hidden');
+    el.feedStatusTag.textContent = 'WEBCAM INSPECTED: (Click "Capture Frame" or "Open Laptop Webcam" to refresh)';
+  }, 'image/jpeg', 0.92);
+}
 
 async function inspectSample(sampleFilename) {
   el.feedStatusTag.textContent = `INSPECTING: ${sampleFilename}...`;
@@ -326,6 +443,9 @@ function renderInspectionResults(data, sourceName) {
   } else {
     el.periodicityTeaser.classList.add('hidden');
   }
+
+  // Record into persistent Historical Audit Trail
+  recordToAuditHistory(data, sourceName);
 }
 
 // ================= Live High-Speed Camera Simulator =================
@@ -609,8 +729,175 @@ function updateCertificateView() {
   }
 }
 
+// ================= Tab 5: Historical Inspection Audit Trail & CSV =================
+function recordToAuditHistory(data, sourceName) {
+  const res = data.results;
+  const disp = data.disposition;
+  const now = new Date();
+  
+  const record = {
+    id: `INS-${Date.now().toString().slice(-6)}`,
+    timestamp: now.toLocaleTimeString() + ' ' + now.toLocaleDateString(),
+    isoTimestamp: now.toISOString(),
+    source: sourceName || 'Live Camera',
+    grade: state.selectedGrade,
+    primaryDefect: res.primary_defect_type || (res.defect_count === 0 ? 'CLEAN PRIME' : 'UNCLASSIFIED'),
+    confidence: res.primary_confidence_pct || '100%',
+    defectCount: res.defect_count,
+    maxDsi: res.max_dsi.toFixed(1),
+    latencyMs: data.inference_latency_ms.toFixed(1),
+    disposition: disp.overall_disposition.replace(/_/g, ' '),
+    dispositionColor: disp.badge_color,
+    summary: disp.summary
+  };
+
+  state.auditHistory.unshift(record);
+  // Keep last 150 records
+  if (state.auditHistory.length > 150) {
+    state.auditHistory.pop();
+  }
+  
+  try {
+    localStorage.setItem('jsl_inspection_history', JSON.stringify(state.auditHistory));
+  } catch (e) {
+    console.warn('LocalStorage save failed:', e);
+  }
+
+  // If currently on Tab 5, update table live
+  if (state.currentTab === 'tab-history') {
+    renderHistoryView();
+  }
+}
+
+function renderHistoryView() {
+  const history = state.auditHistory;
+  
+  // Calculate KPIs
+  const total = history.length;
+  const primeCount = history.filter(h => h.disposition.includes('PRIME')).length;
+  const scrapCount = history.filter(h => h.disposition.includes('SCRAP')).length;
+  const primeRate = total > 0 ? Math.round((primeCount / total) * 100) : 0;
+  const avgDsi = total > 0 ? (history.reduce((acc, h) => acc + parseFloat(h.maxDsi || 0), 0) / total).toFixed(1) : '0.0';
+
+  if (el.kpiTotalInspections) el.kpiTotalInspections.textContent = total;
+  if (el.kpiPrimeRate) el.kpiPrimeRate.textContent = `${primeRate}%`;
+  if (el.kpiAvgDsi) el.kpiAvgDsi.textContent = avgDsi;
+  if (el.kpiScrapCount) el.kpiScrapCount.textContent = scrapCount;
+
+  // Render Table
+  if (!el.historyTableBody) return;
+  
+  if (total === 0) {
+    el.historyTableBody.innerHTML = `
+      <tr class="empty-history-row">
+        <td colspan="10" style="text-align: center; padding: 36px 0; color: var(--text-dim);">
+          📋 No inspections performed yet. Run Live Inspection, upload an image, or use the webcam to generate entries.
+        </td>
+      </tr>`;
+    return;
+  }
+
+  el.historyTableBody.innerHTML = history.map((rec, idx) => {
+    let dispBadgeClass = 'badge-disposition';
+    let badgeStyle = `background: ${rec.dispositionColor}22; border: 1px solid ${rec.dispositionColor}; color: ${rec.dispositionColor};`;
+    
+    return `
+      <tr>
+        <td style="color: var(--text-dim); font-family: monospace;">#${total - idx}</td>
+        <td style="color: var(--text-muted);">${rec.timestamp}</td>
+        <td><strong>${rec.source}</strong></td>
+        <td><span style="background: rgba(255,107,53,0.12); padding: 2px 6px; border-radius: 4px; color: var(--jsl-orange); font-weight:700;">SS ${rec.grade}</span></td>
+        <td><span style="font-weight:600;">${rec.primaryDefect}</span></td>
+        <td style="text-align:center;"><strong>${rec.defectCount}</strong></td>
+        <td><strong style="color: ${rec.maxDsi > 50 ? '#ef4444' : rec.maxDsi > 25 ? '#f59e0b' : '#10b981'}">${rec.maxDsi}</strong></td>
+        <td style="color: var(--text-dim);">${rec.latencyMs} ms</td>
+        <td><span class="${dispBadgeClass}" style="${badgeStyle}">${rec.disposition}</span></td>
+        <td>
+          <button class="btn-row-cert" onclick="viewHistoricalCert('${rec.id}')">View Cert</button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+// Global hook for row-click
+window.viewHistoricalCert = function(recordId) {
+  const rec = state.auditHistory.find(h => h.id === recordId);
+  if (rec) {
+    switchTab('tab-certificate');
+  }
+};
+
+function exportHistoryToCSV() {
+  if (state.auditHistory.length === 0) {
+    alert('No inspection records to export yet. Perform some inspections first!');
+    return;
+  }
+
+  const headers = [
+    'Inspection ID',
+    'Timestamp',
+    'Source / File Name',
+    'Steel Grade',
+    'Primary Defect Type',
+    'Confidence Score',
+    'Defects Count',
+    'Max DSI Severity',
+    'Inference Latency (ms)',
+    'Disposition Verdict',
+    'Quality Summary'
+  ];
+
+  const rows = state.auditHistory.map(rec => [
+    rec.id,
+    rec.isoTimestamp || rec.timestamp,
+    `"${rec.source}"`,
+    `SS ${rec.grade}`,
+    `"${rec.primaryDefect}"`,
+    rec.confidence,
+    rec.defectCount,
+    rec.maxDsi,
+    rec.latencyMs,
+    `"${rec.disposition}"`,
+    `"${(rec.summary || '').replace(/"/g, '""')}"`
+  ]);
+
+  const csvContent = [
+    headers.join(','),
+    ...rows.map(e => e.join(','))
+  ].join('\n');
+
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.setAttribute('href', url);
+  const dateStr = new Date().toISOString().split('T')[0];
+  link.setAttribute('download', `JSL_AeroDefect_Audit_Log_${dateStr}.csv`);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+function clearInspectionHistory() {
+  if (state.auditHistory.length === 0) return;
+  if (confirm('Are you sure you want to clear all historical inspection records?')) {
+    state.auditHistory = [];
+    localStorage.removeItem('jsl_inspection_history');
+    renderHistoryView();
+  }
+}
+
+// Attach export & clear buttons
+if (el.btnExportCsv) {
+  el.btnExportCsv.addEventListener('click', exportHistoryToCSV);
+}
+if (el.btnClearHistory) {
+  el.btnClearHistory.addEventListener('click', clearInspectionHistory);
+}
+
 // Initial Boot
 window.addEventListener('DOMContentLoaded', () => {
   // Start with default sample
   inspectSample('sample_sc.jpg');
 });
+
